@@ -227,68 +227,39 @@ struct RenderContext<'a> {
     indent: ~str,
 }
 
-fn render_helper(ctx: &RenderContext) -> ~str {
-    fn find(stack: &[Data], path: &[~str]) -> Option<Data> {
-        // If we have an empty path, we just want the top value in our stack.
-        if path.is_empty() {
-            return match stack.last() {
-                None => None,
-                Some(value) => Some(value.clone()),
-            };
+struct RenderContextIterator<'a> {
+    render_ctx: &'a RenderContext<'a>,
+    iter: std::vec::Items<'a, parser::Token>
+}
+
+impl<'a> RenderContext<'a> {
+    fn iter(&'a self) -> RenderContextIterator<'a> {
+        let iter = self.tokens.iter();
+        RenderContextIterator {
+            render_ctx: self,
+            iter: iter
         }
-
-        // Otherwise, find the stack that has the first part of our path.
-        let mut value: Option<Data> = None;
-
-        let mut i = stack.len();
-        while i > 0 {
-            match stack[i - 1] {
-                Map(ref ctx) => {
-                    match ctx.find_equiv(&path[0]) {
-                        Some(v) => { value = Some(v.clone()); break; }
-                        None => {}
-                    }
-                    i -= 1;
-                }
-                _ => {
-                    fail!("{:?} {:?}", stack, path)
-                }
-            }
-        }
-
-        // Walk the rest of the path to find our final value.
-        let mut value = value;
-
-        let mut i = 1;
-        let len = path.len();
-
-        while i < len {
-            value = match value {
-                Some(Map(v)) => {
-                    match v.find_equiv(&path[i]) {
-                        Some(value) => Some(value.clone()),
-                        None => None,
-                    }
-                }
-                _ => break,
-            };
-            i = i + 1;
-        }
-
-        value
     }
+}
 
-    let mut output = ~"";
+impl<'a> Iterator<~str> for RenderContextIterator<'a> {
+    fn next(&mut self) -> Option<~str> {
+        let next = self.iter.next();
+        let token = match next {
+            Some(t) => t,
+            None => return None
+        };
 
-    for token in ctx.tokens.iter() {
         match *token {
             parser::Text(ref value) => {
+                let ctx = &self.render_ctx;
                 // Indent the lines.
                 if ctx.indent.equiv(& &"") {
-                    output = output + *value;
+                    Some(value.clone())
                 } else {
                     let mut pos = 0;
                     let len = value.len();
+                    let mut output = ~"";
 
                     while pos < len {
                         let v = value.slice_from(pos);
@@ -311,21 +282,24 @@ fn render_helper(ctx: &RenderContext) -> ~str {
 
                         output.push_str(line);
                     }
+                    Some(output)
                 }
             },
             parser::ETag(ref path, _) => {
-                match find(ctx.stack.as_slice(), path.as_slice()) {
-                    None => { }
+                match _find(self.render_ctx.stack.as_slice(), path.as_slice()) {
+                    None => { self.next() }
                     Some(value) => {
-                        output = output + ctx.indent + render_etag(value, ctx);
+                        let ctx = &*self.render_ctx;
+                        Some(ctx.indent + render_etag(value, ctx))
                     }
                 }
             }
             parser::UTag(ref path, _) => {
-                match find(ctx.stack.as_slice(), path.as_slice()) {
-                    None => { }
+                match _find(self.render_ctx.stack.as_slice(), path.as_slice()) {
+                    None => { self.next() }
                     Some(value) => {
-                        output = output + ctx.indent + render_utag(value, ctx);
+                        let ctx = &*self.render_ctx;
+                        Some(ctx.indent + render_utag(value, ctx))
                     }
                 }
             }
@@ -334,19 +308,19 @@ fn render_helper(ctx: &RenderContext) -> ~str {
                     // FIXME: #rust/9382
                     // This should be `tokens: *children,` but that's broken
                     tokens: children.as_slice(),
-                    .. ctx.clone()
+                    .. self.render_ctx.clone()
                 };
 
-                output = output + match find(ctx.stack.as_slice(), path.as_slice()) {
+                Some(match _find(ctx.stack.as_slice(), path.as_slice()) {
                     None => { render_helper(&ctx) }
                     Some(value) => { render_inverted_section(value, &ctx) }
-                };
+                })
             }
             parser::Section(ref path, false, ref children, ref otag, _, ref src, _, ref ctag) => {
-                match find(ctx.stack.as_slice(), path.as_slice()) {
-                    None => { }
+                match _find(self.render_ctx.stack.as_slice(), path.as_slice()) {
+                    None => { self.next() }
                     Some(value) => {
-                        output = output + render_section(
+                        Some(render_section(
                             value,
                             *src,
                             *otag,
@@ -355,29 +329,87 @@ fn render_helper(ctx: &RenderContext) -> ~str {
                                 // FIXME: #rust/9382
                                 // This should be `tokens: *children,` but that's broken
                                 tokens: children.as_slice(),
-                                .. ctx.clone()
+                                .. self.render_ctx.clone()
                             }
-                        );
+                        ))
                     }
                 }
             }
             parser::Partial(ref name, ref ind, _) => {
-                match ctx.partials.find(name) {
-                    None => { }
+                match self.render_ctx.partials.find(name) {
+                    None => { self.next() }
                     Some(tokens) => {
-                        output = output + render_helper(&RenderContext {
+                        Some(render_helper(&RenderContext {
                             // FIXME: #rust/9382
                             // This should be `tokens: *tokens,` but that's broken
                             tokens: tokens.as_slice(),
-                            indent: ctx.indent + *ind,
-                            .. ctx.clone()
-                        });
+                            indent: self.render_ctx.indent + *ind,
+                            .. self.render_ctx.clone()
+                        }))
                     }
                 }
             }
             _ => { fail!() }
+        }
+    }
+}
+
+fn _find(stack: &[Data], path: &[~str]) -> Option<Data> {
+    // If we have an empty path, we just want the top value in our stack.
+    if path.is_empty() {
+        return match stack.last() {
+            None => None,
+            Some(value) => Some(value.clone()),
         };
-    };
+    }
+
+    // Otherwise, find the stack that has the first part of our path.
+    let mut value: Option<Data> = None;
+
+    let mut i = stack.len();
+    while i > 0 {
+        match stack[i - 1] {
+            Map(ref ctx) => {
+                match ctx.find_equiv(&path[0]) {
+                    Some(v) => { value = Some(v.clone()); break; }
+                    None => {}
+                }
+                i -= 1;
+            }
+            _ => {
+                fail!("{:?} {:?}", stack, path)
+            }
+        }
+    }
+
+    // Walk the rest of the path to find our final value.
+    let mut value = value;
+
+    let mut i = 1;
+    let len = path.len();
+
+    while i < len {
+        value = match value {
+            Some(Map(v)) => {
+                match v.find_equiv(&path[i]) {
+                    Some(value) => Some(value.clone()),
+                    None => None,
+                }
+            }
+            _ => break,
+        };
+        i = i + 1;
+    }
+
+    value
+}
+
+fn render_helper(ctx: &RenderContext) -> ~str {
+    let mut output = ~"";
+
+    for i in ctx.iter() {
+        output.push_str(i);
+    }
 
     output
 }
