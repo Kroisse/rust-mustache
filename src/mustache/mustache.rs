@@ -6,6 +6,7 @@ extern crate collections;
 
 use std::io::File;
 use std::str;
+use std::slice::Items;
 use collections::hashmap::HashMap;
 
 pub use parser::{Token, Parser};
@@ -135,11 +136,11 @@ impl Template {
     }
 
     pub fn render_data(&self, data: Data) -> ~str {
-        render_helper(&RenderContext {
+        render_helper(RenderContext {
             ctx: self.ctx.clone(),
             // FIXME: #rust/9382
             // This should be `tokens: self.tokens,` but that's broken
-            tokens: self.tokens.as_slice(),
+            tokens: self.tokens.iter(),
             partials: self.partials.clone(),
             stack: vec!(data),
             indent: ~""
@@ -219,32 +220,17 @@ impl<'a, T: Iterator<char>> CompileContext<'a, T> {
 }
 
 #[deriving(Clone)]
-struct RenderContext<'a> {
-    ctx: Context,
-    tokens: &'a [Token],
-    partials: HashMap<~str, Vec<Token>>,
-    stack: Vec<Data>,
-    indent: ~str,
+pub struct RenderContext<'a> {
+    priv ctx: Context,
+    priv tokens: Items<'a, Token>,
+    priv partials: HashMap<~str, Vec<Token>>,
+    priv stack: Vec<Data>,
+    priv indent: ~str,
 }
 
-struct RenderContextIterator<'a> {
-    render_ctx: &'a RenderContext<'a>,
-    iter: std::vec::Items<'a, parser::Token>
-}
-
-impl<'a> RenderContext<'a> {
-    fn iter(&'a self) -> RenderContextIterator<'a> {
-        let iter = self.tokens.iter();
-        RenderContextIterator {
-            render_ctx: self,
-            iter: iter
-        }
-    }
-}
-
-impl<'a> Iterator<~str> for RenderContextIterator<'a> {
+impl<'a> Iterator<~str> for RenderContext<'a> {
     fn next(&mut self) -> Option<~str> {
-        let next = self.iter.next();
+        let next = self.tokens.next();
         let token = match next {
             Some(t) => t,
             None => return None
@@ -252,9 +238,8 @@ impl<'a> Iterator<~str> for RenderContextIterator<'a> {
 
         match *token {
             parser::Text(ref value) => {
-                let ctx = &self.render_ctx;
                 // Indent the lines.
-                if ctx.indent.equiv(& &"") {
+                if self.indent.equiv(& &"") {
                     Some(value.clone())
                 } else {
                     let mut pos = 0;
@@ -277,7 +262,7 @@ impl<'a> Iterator<~str> for RenderContextIterator<'a> {
                         };
 
                         if line.char_at(0) != '\n' {
-                            output.push_str(ctx.indent);
+                            output.push_str(self.indent);
                         }
 
                         output.push_str(line);
@@ -286,20 +271,18 @@ impl<'a> Iterator<~str> for RenderContextIterator<'a> {
                 }
             },
             parser::ETag(ref path, _) => {
-                match _find(self.render_ctx.stack.as_slice(), path.as_slice()) {
+                match _find(self.stack.as_slice(), path.as_slice()) {
                     None => { self.next() }
                     Some(value) => {
-                        let ctx = &*self.render_ctx;
-                        Some(ctx.indent + render_etag(value, ctx))
+                        Some(self.indent + render_etag(value, self))
                     }
                 }
             }
             parser::UTag(ref path, _) => {
-                match _find(self.render_ctx.stack.as_slice(), path.as_slice()) {
+                match _find(self.stack.as_slice(), path.as_slice()) {
                     None => { self.next() }
                     Some(value) => {
-                        let ctx = &*self.render_ctx;
-                        Some(ctx.indent + render_utag(value, ctx))
+                        Some(self.indent + render_utag(value, self))
                     }
                 }
             }
@@ -307,17 +290,17 @@ impl<'a> Iterator<~str> for RenderContextIterator<'a> {
                 let ctx = RenderContext {
                     // FIXME: #rust/9382
                     // This should be `tokens: *children,` but that's broken
-                    tokens: children.as_slice(),
-                    .. self.render_ctx.clone()
+                    tokens: children.iter(),
+                    .. self.clone()
                 };
 
                 Some(match _find(ctx.stack.as_slice(), path.as_slice()) {
-                    None => { render_helper(&ctx) }
-                    Some(value) => { render_inverted_section(value, &ctx) }
+                    None => { render_helper(ctx) }
+                    Some(value) => { render_inverted_section(value, ctx) }
                 })
             }
             parser::Section(ref path, false, ref children, ref otag, _, ref src, _, ref ctag) => {
-                match _find(self.render_ctx.stack.as_slice(), path.as_slice()) {
+                match _find(self.stack.as_slice(), path.as_slice()) {
                     None => { self.next() }
                     Some(value) => {
                         Some(render_section(
@@ -325,29 +308,30 @@ impl<'a> Iterator<~str> for RenderContextIterator<'a> {
                             *src,
                             *otag,
                             *ctag,
-                            &RenderContext {
+                            RenderContext {
                                 // FIXME: #rust/9382
                                 // This should be `tokens: *children,` but that's broken
-                                tokens: children.as_slice(),
-                                .. self.render_ctx.clone()
+                                tokens: children.iter(),
+                                .. self.clone()
                             }
                         ))
                     }
                 }
             }
             parser::Partial(ref name, ref ind, _) => {
-                match self.render_ctx.partials.find(name) {
-                    None => { self.next() }
+                match self.partials.find(name) {
+                    None => { }
                     Some(tokens) => {
-                        Some(render_helper(&RenderContext {
+                        return Some(render_helper(RenderContext {
                             // FIXME: #rust/9382
                             // This should be `tokens: *tokens,` but that's broken
-                            tokens: tokens.as_slice(),
-                            indent: self.render_ctx.indent + *ind,
-                            .. self.render_ctx.clone()
-                        }))
+                            tokens: tokens.iter(),
+                            indent: self.indent + *ind,
+                            .. self.clone()
+                        }));
                     }
                 }
+                self.next()
             }
             _ => { fail!() }
         }
@@ -404,14 +388,8 @@ fn _find(stack: &[Data], path: &[~str]) -> Option<Data> {
     value
 }
 
-fn render_helper(ctx: &RenderContext) -> ~str {
-    let mut output = ~"";
-
-    for i in ctx.iter() {
-        output.push_str(i);
-    }
-
-    output
+fn render_helper(mut ctx: RenderContext) -> ~str {
+    ctx.collect::<Vec<~str>>().concat()
 }
 
 fn render_etag(value: Data, ctx: &RenderContext) -> ~str {
@@ -441,7 +419,7 @@ fn render_utag(value: Data, _ctx: &RenderContext) -> ~str {
     }
 }
 
-fn render_inverted_section(value: Data, ctx: &RenderContext) -> ~str {
+fn render_inverted_section(value: Data, ctx: RenderContext) -> ~str {
     match value {
         Bool(false) => render_helper(ctx),
         Vec(ref xs) if xs.len() == 0 => render_helper(ctx),
@@ -453,7 +431,7 @@ fn render_section(value: Data,
                   _src: &str,
                   _otag: &str,
                   _ctag: &str,
-                  ctx: &RenderContext) -> ~str {
+                  ctx: RenderContext) -> ~str {
     match value {
         Bool(true) => render_helper(ctx),
         Bool(false) => ~"",
@@ -462,14 +440,14 @@ fn render_section(value: Data,
                 let mut stack = ctx.stack.clone();
                 stack.push(v.clone());
 
-                render_helper(&RenderContext { stack: stack, .. (*ctx).clone() })
+                render_helper(RenderContext { stack: stack, .. ctx.clone() })
             }).collect::<Vec<~str>>().concat()
         }
         Map(_) => {
             let mut stack = ctx.stack.clone();
             stack.push(value);
 
-            render_helper(&RenderContext { stack: stack, .. (*ctx).clone() })
+            render_helper(RenderContext { stack: stack, .. ctx.clone() })
         }
         //Fun(f) => render_fun(ctx, src, otag, ctag, f),
         _ => fail!(),
