@@ -125,6 +125,15 @@ pub fn render_str<T: serialize::Encodable<Encoder>>(template: &str, data: &T) ->
 
 impl Template {
     pub fn render<T: serialize::Encodable<Encoder> >(&self, data: &T) -> ~str {
+        self.render_iter(data).collect::<Vec<~str>>().concat()
+    }
+
+    pub fn render_data(&self, data: Data) -> ~str {
+        self.render_data_iter(data).collect::<Vec<~str>>().concat()
+    }
+
+    pub fn render_iter<'a, T: serialize::Encodable<Encoder>>(&'a self, data: &T)
+            -> RenderContext<'a> {
         let mut encoder = Encoder::new();
         data.encode(&mut encoder);
         assert_eq!(encoder.data.len(), 1);
@@ -132,11 +141,11 @@ impl Template {
             Some(p) => p,
             None => fail!("Error: Nothing to pop!"),
         };
-        self.render_data(popped)
+        self.render_data_iter(popped)
     }
 
-    pub fn render_data(&self, data: Data) -> ~str {
-        render_helper(RenderContext {
+    pub fn render_data_iter<'a>(&'a self, data: Data) -> RenderContext<'a> {
+        RenderContext {
             ctx: self.ctx.clone(),
             // FIXME: #rust/9382
             // This should be `tokens: self.tokens,` but that's broken
@@ -144,7 +153,7 @@ impl Template {
             partials: self.partials.clone(),
             stack: vec!(data),
             indent: ~""
-        })
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+#[feature(macro_rules)];
 #[feature(phase)];
 #[phase(syntax, link)] extern crate log;
 
@@ -16,6 +17,35 @@ mod test {
     use mustache::{Context};
     use mustache::encoder::{Encoder, Data, Str, Vec, Map};
     use mustache::parser::{Token, Text, ETag, UTag, Section, IncompleteSection, Partial};
+
+    macro_rules! assert_render_iter(
+        ($template_str:expr, $ctx:expr, [$($expected_values:expr),*]) => ({
+            let template = compile_str($template_str);
+            let mut given_iter = template.render_iter($ctx);
+            let mut expected_iter = vec!($($expected_values),*).move_iter();
+            let mut i = 0;
+            loop {
+                match (given_iter.next(), expected_iter.next()) {
+                    (Some(ref given_val), Some(ref expected_val)) => {
+                        if !((*given_val == *expected_val) &&
+                             (*expected_val == *given_val)) {
+                            fail!("assertion failed: `(left == right) && (right == left)` \
+                                   (left: `{}`, right: `{}`) at \\#{}",
+                                  *given_val, *expected_val, i)
+                        }
+                    }
+                    (Some(_), None) => {
+                        fail!("assertion failed: left is longer than {}", i)
+                    }
+                    (None, Some(_)) => {
+                        fail!("assertion failed: right is longer than {}", i)
+                    }
+                    (None, None) => { break }
+                }
+                i += 1;
+            }
+        })
+    )
 
     fn token_to_str(token: &Token) -> ~str {
         match *token {
@@ -269,6 +299,17 @@ mod test {
         assert_eq!(render_str("hello world}", ctx), ~"hello world}");
         assert_eq!(render_str("hello {world}", ctx), ~"hello {world}");
         assert_eq!(render_str("hello world}}", ctx), ~"hello world}}");
+    }
+
+    #[test]
+    fn test_render_iter() {
+        let ctx = &Name { name: ~"world" };
+
+        assert_render_iter!("hello world", ctx, [~"hello world"]);
+        assert_render_iter!("hello {world", ctx, [~"hello {world"]);
+        assert_render_iter!("hello world}", ctx, [~"hello world}"]);
+        assert_render_iter!("hello {world}", ctx, [~"hello {world}"]);
+        assert_render_iter!("hello world}}", ctx, [~"hello world}}"]);
     }
 
     #[test]
