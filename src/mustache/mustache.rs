@@ -8,10 +8,12 @@ use std::io::File;
 use std::str;
 use std::slice::Items;
 use collections::hashmap::HashMap;
+use util::IteratorChain;
 
 pub use parser::{Token, Parser};
 pub use encoder::{Encoder, Data, Map, Vec, Bool, Str};
 
+mod util;
 pub mod parser;
 pub mod encoder;
 
@@ -152,7 +154,8 @@ impl Template {
             tokens: self.tokens.iter(),
             partials: self.partials.clone(),
             stack: vec!(data),
-            indent: ~""
+            indent: ~"",
+            inner_ctx: None
         }
     }
 }
@@ -234,6 +237,8 @@ pub struct RenderContext<'a> {
     priv partials: HashMap<~str, Vec<Token>>,
     priv stack: Vec<Data>,
     priv indent: ~str,
+
+    priv inner_ctx: Option<~Iterator<~str>>
 }
 
 impl<'a> Clone for RenderContext<'a> {
@@ -243,7 +248,8 @@ impl<'a> Clone for RenderContext<'a> {
             tokens: self.tokens.clone(),
             partials: self.partials.clone(),
             stack: self.stack.clone(),
-            indent: self.indent.clone()
+            indent: self.indent.clone(),
+            inner_ctx: None
         }
     }
 }
@@ -255,13 +261,26 @@ impl<'a> RenderContext<'a> {
             tokens: tokens,
             partials: self.partials.clone(),
             stack: self.stack.clone(),
-            indent: self.indent.clone()
+            indent: self.indent.clone(),
+            inner_ctx: None
         }
     }
 }
 
 impl<'a> Iterator<~str> for RenderContext<'a> {
     fn next(&mut self) -> Option<~str> {
+        match self.inner_ctx.as_mut().and_then(|i| i.next()) {
+            Some(v) => { Some(v) }
+            None => {
+                self.inner_ctx = None;
+                self.next_token()
+            }
+        }
+    }
+}
+
+impl<'a> RenderContext<'a> {
+    fn next_token(&mut self) -> Option<~str> {
         let next = self.tokens.next();
         let token = match next {
             Some(t) => t,
@@ -321,24 +340,28 @@ impl<'a> Iterator<~str> for RenderContext<'a> {
             parser::Section(ref path, true, ref children, _, _, _, _, _) => {
                 let ctx = self.clone_with_tokens(children.iter());
 
-                Some(match _find(ctx.stack.as_slice(), path.as_slice()) {
-                    None => { render_helper(ctx) }
+                let found = _find(ctx.stack.as_slice(), path.as_slice());
+                replace_inner_ctx(&mut self.inner_ctx, match found {
+                    None => { Some(render_helper(ctx)) }
                     Some(value) => { render_inverted_section(value, ctx) }
-                })
+                });
+                self.next()
             }
             parser::Section(ref path, false, ref children, ref otag, _, ref src, _, ref ctag) => {
                 match _find(self.stack.as_slice(), path.as_slice()) {
-                    None => { self.next() }
+                    None => { }
                     Some(value) => {
-                        Some(render_section(
+                        let iter = render_section(
                             value,
                             *src,
                             *otag,
                             *ctag,
                             self.clone_with_tokens(children.iter())
-                        ))
+                        );
+                        replace_inner_ctx(&mut self.inner_ctx, iter);
                     }
                 }
+                self.next()
             }
             parser::Partial(ref name, ref ind, _) => {
                 match self.partials.find(name) {
@@ -346,7 +369,7 @@ impl<'a> Iterator<~str> for RenderContext<'a> {
                     Some(tokens) => {
                         let mut ctx = self.clone_with_tokens(tokens.iter());
                         ctx.indent.push_str(*ind);
-                        return Some(render_helper(ctx));
+                        replace_inner_ctx(&mut self.inner_ctx, Some(render_helper(ctx)));
                     }
                 }
                 self.next()
@@ -354,6 +377,13 @@ impl<'a> Iterator<~str> for RenderContext<'a> {
             _ => { fail!() }
         }
     }
+}
+
+fn replace_inner_ctx<T>(inner_ctx: &mut Option<T>, iter: Option<T>) {
+    if !inner_ctx.is_none() {
+        fail!()
+    }
+    *inner_ctx = iter;
 }
 
 fn _find(stack: &[Data], path: &[~str]) -> Option<Data> {
@@ -406,8 +436,8 @@ fn _find(stack: &[Data], path: &[~str]) -> Option<Data> {
     value
 }
 
-fn render_helper(mut ctx: RenderContext) -> ~str {
-    ctx.collect::<Vec<~str>>().concat()
+fn render_helper(mut ctx: RenderContext) -> ~Iterator<~str> {
+    ~ctx as ~Iterator<~str>
 }
 
 fn render_etag(value: Data, ctx: &RenderContext) -> ~str {
@@ -437,11 +467,11 @@ fn render_utag(value: Data, _ctx: &RenderContext) -> ~str {
     }
 }
 
-fn render_inverted_section(value: Data, ctx: RenderContext) -> ~str {
+fn render_inverted_section(value: Data, ctx: RenderContext) -> Option<~Iterator<~str>> {
     match value {
-        Bool(false) => render_helper(ctx),
-        Vec(ref xs) if xs.len() == 0 => render_helper(ctx),
-        _ => ~"",
+        Bool(false) => Some(render_helper(ctx)),
+        Vec(ref xs) if xs.len() == 0 => Some(render_helper(ctx)),
+        _ => None,
     }
 }
 
@@ -449,21 +479,22 @@ fn render_section(value: Data,
                   _src: &str,
                   _otag: &str,
                   _ctag: &str,
-                  ctx: RenderContext) -> ~str {
+                  ctx: RenderContext) -> Option<~Iterator<~str>> {
     match value {
-        Bool(true) => render_helper(ctx),
-        Bool(false) => ~"",
+        Bool(true) => Some(render_helper(ctx)),
+        Bool(false) => None,
         Vec(vs) => {
-            vs.move_iter().map(|v| {
+            let contexts = vs.move_iter().map(|v| {
                 let mut ctx = ctx.clone();
                 ctx.stack.push(v.clone());
-                render_helper(ctx)
-            }).collect::<Vec<~str>>().concat()
+                ctx
+            }).collect::<Vec<RenderContext>>().move_iter();
+            Some(~IteratorChain::new(contexts) as ~Iterator<~str>)
         }
         Map(_) => {
-            let mut ctx = ctx.clone();
+            let mut ctx = ctx;
             ctx.stack.push(value);
-            render_helper(ctx)
+            Some(render_helper(ctx))
         }
         //Fun(f) => render_fun(ctx, src, otag, ctag, f),
         _ => fail!(),
