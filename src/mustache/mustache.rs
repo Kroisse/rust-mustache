@@ -342,7 +342,7 @@ impl<'a> RenderContext<'a> {
 
                 let found = _find(ctx.stack.as_slice(), path.as_slice());
                 replace_inner_ctx(&mut self.inner_ctx, match found {
-                    None => { Some(render_helper(ctx)) }
+                    None => { render_helper(ctx) }
                     Some(value) => { render_inverted_section(value, ctx) }
                 });
                 self.next()
@@ -369,7 +369,7 @@ impl<'a> RenderContext<'a> {
                     Some(tokens) => {
                         let mut ctx = self.clone_with_tokens(tokens.iter());
                         ctx.indent.push_str(*ind);
-                        replace_inner_ctx(&mut self.inner_ctx, Some(render_helper(ctx)));
+                        replace_inner_ctx(&mut self.inner_ctx, render_helper(ctx));
                     }
                 }
                 self.next()
@@ -436,8 +436,8 @@ fn _find(stack: &[Data], path: &[~str]) -> Option<Data> {
     value
 }
 
-fn render_helper(mut ctx: RenderContext) -> ~Iterator<~str> {
-    ~ctx as ~Iterator<~str>
+fn render_helper(ctx: RenderContext) -> Option<~Iterator<~str>> {
+    Some(~ctx as ~Iterator<~str>)
 }
 
 fn render_etag(value: Data, ctx: &RenderContext) -> ~str {
@@ -469,8 +469,8 @@ fn render_utag(value: Data, _ctx: &RenderContext) -> ~str {
 
 fn render_inverted_section(value: Data, ctx: RenderContext) -> Option<~Iterator<~str>> {
     match value {
-        Bool(false) => Some(render_helper(ctx)),
-        Vec(ref xs) if xs.len() == 0 => Some(render_helper(ctx)),
+        Bool(false) => render_helper(ctx),
+        Vec(ref xs) if xs.len() == 0 => render_helper(ctx),
         _ => None,
     }
 }
@@ -481,7 +481,7 @@ fn render_section(value: Data,
                   _ctag: &str,
                   ctx: RenderContext) -> Option<~Iterator<~str>> {
     match value {
-        Bool(true) => Some(render_helper(ctx)),
+        Bool(true) => render_helper(ctx),
         Bool(false) => None,
         Vec(vs) => {
             let contexts = vs.move_iter().map(|v| {
@@ -494,7 +494,7 @@ fn render_section(value: Data,
         Map(_) => {
             let mut ctx = ctx;
             ctx.stack.push(value);
-            Some(render_helper(ctx))
+            render_helper(ctx)
         }
         //Fun(f) => render_fun(ctx, src, otag, ctag, f),
         _ => fail!(),
