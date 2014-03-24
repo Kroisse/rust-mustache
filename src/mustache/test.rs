@@ -27,11 +27,13 @@ mod test {
             loop {
                 match (given_iter.next(), expected_iter.next()) {
                     (Some(ref given_val), Some(ref expected_val)) => {
-                        if !((*given_val == *expected_val) &&
-                             (*expected_val == *given_val)) {
+                        let given_val = given_val.as_slice();
+                        let expected_val = expected_val.as_slice();
+                        if !((given_val == expected_val) &&
+                             (expected_val == given_val)) {
                             fail!("assertion failed: `(left == right) && (right == left)` \
                                    (left: `{}`, right: `{}`) at \\#{}",
-                                  *given_val, *expected_val, i)
+                                  given_val, expected_val, i)
                         }
                     }
                     (Some(_), None) => {

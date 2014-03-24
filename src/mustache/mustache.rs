@@ -6,6 +6,7 @@ extern crate collections;
 
 use std::io::File;
 use std::str;
+use std::str::{MaybeOwned, IntoMaybeOwned};
 use std::slice::Items;
 use collections::hashmap::HashMap;
 use util::IteratorChain;
@@ -127,11 +128,11 @@ pub fn render_str<T: serialize::Encodable<Encoder>>(template: &str, data: &T) ->
 
 impl Template {
     pub fn render<T: serialize::Encodable<Encoder> >(&self, data: &T) -> ~str {
-        self.render_iter(data).collect::<Vec<~str>>().concat()
+        self.render_iter(data).collect::<Vec<MaybeOwned>>().concat()
     }
 
     pub fn render_data(&self, data: Data) -> ~str {
-        self.render_data_iter(data).collect::<Vec<~str>>().concat()
+        self.render_data_iter(data).collect::<Vec<MaybeOwned>>().concat()
     }
 
     pub fn render_iter<'a, T: serialize::Encodable<Encoder>>(&'a self, data: &T)
@@ -154,7 +155,7 @@ impl Template {
             tokens: self.tokens.iter(),
             partials: &self.partials,
             stack: vec!(data),
-            indent: ~"",
+            indent: "".into_maybe_owned(),
             inner_ctx: None
         }
     }
@@ -236,9 +237,9 @@ pub struct RenderContext<'a> {
     priv tokens: Items<'a, Token>,
     priv partials: &'a HashMap<~str, Vec<Token>>,
     priv stack: Vec<Data>,
-    priv indent: ~str,
+    priv indent: MaybeOwned<'a>,
 
-    priv inner_ctx: Option<~Iterator:<~str>>
+    priv inner_ctx: Option<~Iterator:<MaybeOwned<'a>>>
 }
 
 impl<'a> Clone for RenderContext<'a> {
@@ -267,8 +268,8 @@ impl<'a> RenderContext<'a> {
     }
 }
 
-impl<'a> Iterator<~str> for RenderContext<'a> {
-    fn next(&mut self) -> Option<~str> {
+impl<'a> Iterator<MaybeOwned<'a>> for RenderContext<'a> {
+    fn next(&mut self) -> Option<MaybeOwned<'a>> {
         match self.inner_ctx.as_mut().and_then(|i| i.next()) {
             Some(v) => { Some(v) }
             None => {
@@ -280,7 +281,7 @@ impl<'a> Iterator<~str> for RenderContext<'a> {
 }
 
 impl<'a> RenderContext<'a> {
-    fn next_token(&mut self) -> Option<~str> {
+    fn next_token(&mut self) -> Option<MaybeOwned<'a>> {
         let next = self.tokens.next();
         let token = match next {
             Some(t) => t,
@@ -291,11 +292,11 @@ impl<'a> RenderContext<'a> {
             parser::Text(ref value) => {
                 // Indent the lines.
                 if self.indent.equiv(& &"") {
-                    Some(value.clone())
+                    Some(value.as_slice().into_maybe_owned())
                 } else {
                     let mut pos = 0;
                     let len = value.len();
-                    let mut output = ~"";
+                    let mut output = vec!();
 
                     while pos < len {
                         let v = value.slice_from(pos);
@@ -313,19 +314,22 @@ impl<'a> RenderContext<'a> {
                         };
 
                         if line.char_at(0) != '\n' {
-                            output.push_str(self.indent);
+                            output.push(self.indent.clone());
                         }
 
-                        output.push_str(line);
+                        output.push(line.into_maybe_owned());
                     }
-                    Some(output)
+                    let iter = ~output.move_iter() as ~Iterator:<MaybeOwned<'a>>;
+                    replace_inner_ctx(&mut self.inner_ctx, Some(iter));
+                    self.next()
                 }
             },
             parser::ETag(ref path, _) => {
                 match _find(self.stack.as_slice(), path.as_slice()) {
                     None => { self.next() }
                     Some(value) => {
-                        Some(self.indent + render_etag(value, self))
+                        let chunk = self.indent.as_slice() + render_etag(value, self);
+                        Some(chunk.into_maybe_owned())
                     }
                 }
             }
@@ -333,7 +337,8 @@ impl<'a> RenderContext<'a> {
                 match _find(self.stack.as_slice(), path.as_slice()) {
                     None => { self.next() }
                     Some(value) => {
-                        Some(self.indent + render_utag(value, self))
+                        let chunk = self.indent.as_slice() + render_utag(value, self);
+                        Some(chunk.into_maybe_owned())
                     }
                 }
             }
@@ -364,11 +369,11 @@ impl<'a> RenderContext<'a> {
                 self.next()
             }
             parser::Partial(ref name, ref ind, _) => {
-                match self.partials.find(name) {
+                match self.partials.find::<'a>(name) {
                     None => { }
                     Some(tokens) => {
                         let mut ctx = self.clone_with_tokens(tokens.iter());
-                        ctx.indent.push_str(*ind);
+                        ctx.indent = (ctx.indent.as_slice() + *ind).into_maybe_owned();
                         replace_inner_ctx(&mut self.inner_ctx, render_helper(ctx));
                     }
                 }
@@ -436,8 +441,8 @@ fn _find(stack: &[Data], path: &[~str]) -> Option<Data> {
     value
 }
 
-fn render_helper(ctx: RenderContext) -> Option<~Iterator:<~str>> {
-    Some(~ctx as ~Iterator:<~str>)
+fn render_helper<'a>(ctx: RenderContext<'a>) -> Option<~Iterator:<MaybeOwned<'a>>> {
+    Some(~ctx as ~Iterator:<MaybeOwned<'a>>)
 }
 
 fn render_etag(value: Data, ctx: &RenderContext) -> ~str {
@@ -467,7 +472,8 @@ fn render_utag(value: Data, _ctx: &RenderContext) -> ~str {
     }
 }
 
-fn render_inverted_section(value: Data, ctx: RenderContext) -> Option<~Iterator:<~str>> {
+fn render_inverted_section<'a>(value: Data, ctx: RenderContext<'a>)
+        -> Option<~Iterator:<MaybeOwned<'a>>> {
     match value {
         Bool(false) => render_helper(ctx),
         Vec(ref xs) if xs.len() == 0 => render_helper(ctx),
@@ -475,11 +481,11 @@ fn render_inverted_section(value: Data, ctx: RenderContext) -> Option<~Iterator:
     }
 }
 
-fn render_section(value: Data,
+fn render_section<'a>(value: Data,
                   _src: &str,
                   _otag: &str,
                   _ctag: &str,
-                  ctx: RenderContext) -> Option<~Iterator:<~str>> {
+                  ctx: RenderContext<'a>) -> Option<~Iterator:<MaybeOwned<'a>>> {
     match value {
         Bool(true) => render_helper(ctx),
         Bool(false) => None,
@@ -489,7 +495,7 @@ fn render_section(value: Data,
                 ctx.stack.push(v.clone());
                 ctx
             }).collect::<Vec<RenderContext>>().move_iter();
-            Some(~IteratorChain::new(contexts) as ~Iterator:<~str>)
+            Some(~IteratorChain::new(contexts) as ~Iterator:<MaybeOwned>)
         }
         Map(_) => {
             let mut ctx = ctx;
