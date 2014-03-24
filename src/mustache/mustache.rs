@@ -152,7 +152,7 @@ impl Template {
             // FIXME: #rust/9382
             // This should be `tokens: self.tokens,` but that's broken
             tokens: self.tokens.iter(),
-            partials: self.partials.clone(),
+            partials: &self.partials,
             stack: vec!(data),
             indent: ~"",
             inner_ctx: None
@@ -234,11 +234,11 @@ impl<'a, T: Iterator<char>> CompileContext<'a, T> {
 pub struct RenderContext<'a> {
     priv ctx: Context,
     priv tokens: Items<'a, Token>,
-    priv partials: HashMap<~str, Vec<Token>>,
+    priv partials: &'a HashMap<~str, Vec<Token>>,
     priv stack: Vec<Data>,
     priv indent: ~str,
 
-    priv inner_ctx: Option<~Iterator<~str>>
+    priv inner_ctx: Option<~Iterator:<~str>>
 }
 
 impl<'a> Clone for RenderContext<'a> {
@@ -246,7 +246,7 @@ impl<'a> Clone for RenderContext<'a> {
         RenderContext {
             ctx: self.ctx.clone(),
             tokens: self.tokens.clone(),
-            partials: self.partials.clone(),
+            partials: self.partials,
             stack: self.stack.clone(),
             indent: self.indent.clone(),
             inner_ctx: None
@@ -259,7 +259,7 @@ impl<'a> RenderContext<'a> {
         RenderContext {
             ctx: self.ctx.clone(),
             tokens: tokens,
-            partials: self.partials.clone(),
+            partials: self.partials,
             stack: self.stack.clone(),
             indent: self.indent.clone(),
             inner_ctx: None
@@ -436,8 +436,8 @@ fn _find(stack: &[Data], path: &[~str]) -> Option<Data> {
     value
 }
 
-fn render_helper(ctx: RenderContext) -> Option<~Iterator<~str>> {
-    Some(~ctx as ~Iterator<~str>)
+fn render_helper(ctx: RenderContext) -> Option<~Iterator:<~str>> {
+    Some(~ctx as ~Iterator:<~str>)
 }
 
 fn render_etag(value: Data, ctx: &RenderContext) -> ~str {
@@ -467,7 +467,7 @@ fn render_utag(value: Data, _ctx: &RenderContext) -> ~str {
     }
 }
 
-fn render_inverted_section(value: Data, ctx: RenderContext) -> Option<~Iterator<~str>> {
+fn render_inverted_section(value: Data, ctx: RenderContext) -> Option<~Iterator:<~str>> {
     match value {
         Bool(false) => render_helper(ctx),
         Vec(ref xs) if xs.len() == 0 => render_helper(ctx),
@@ -479,7 +479,7 @@ fn render_section(value: Data,
                   _src: &str,
                   _otag: &str,
                   _ctag: &str,
-                  ctx: RenderContext) -> Option<~Iterator<~str>> {
+                  ctx: RenderContext) -> Option<~Iterator:<~str>> {
     match value {
         Bool(true) => render_helper(ctx),
         Bool(false) => None,
@@ -489,7 +489,7 @@ fn render_section(value: Data,
                 ctx.stack.push(v.clone());
                 ctx
             }).collect::<Vec<RenderContext>>().move_iter();
-            Some(~IteratorChain::new(contexts) as ~Iterator<~str>)
+            Some(~IteratorChain::new(contexts) as ~Iterator:<~str>)
         }
         Map(_) => {
             let mut ctx = ctx;
